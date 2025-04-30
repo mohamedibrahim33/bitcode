@@ -1,0 +1,140 @@
+# Uncomment this line to define a global platform for your project
+platform :ios, '14.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    
+    # Force all pods to use minimum iOS 12.0 and disable bitcode
+    target.build_configurations.each do |config|
+      # Ensure minimum deployment target
+      if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 12.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+      end
+      
+      # Disable bitcode completely
+      config.build_settings['ENABLE_BITCODE'] = 'NO'
+      
+      # Permission handler configurations
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+        '$(inherited)',
+        'PERMISSION_CAMERA=1',
+        'PERMISSION_MICROPHONE=1',
+        'PERMISSION_PHOTOS=1',
+      ]
+    end
+  end
+  
+ # Add the new bitcode stripping function
+ def strip_bitcode_from_frameworks
+  puts "Checking frameworks for Bitcode..."
+
+  # Find all .framework folders inside Pods
+  frameworks = Dir.glob("Pods/**/*.framework")
+  
+  # Add specific problematic frameworks that might not be in standard locations
+  specific_frameworks = [
+    # Standard paths in Pods directory
+    "Pods/**/AgoraRtmKit.framework",
+    "Pods/**/ipworks3ds_sdk.framework",
+    
+    # Add potential paths for local packages
+    "../.pub-cache/**/ipworks3ds_sdk.framework",
+    "**/flutter_oppwa/**/ipworks3ds_sdk.framework",
+    # The built app path for verification
+    "../build/ios/iphoneos/Runner.app/Frameworks/ipworks3ds_sdk.framework"
+  ]
+  
+  # Add the specific frameworks to the list
+  specific_frameworks.each do |pattern|
+    frameworks.concat(Dir.glob(pattern))
+  end
+  
+  # Remove duplicates
+  frameworks.uniq!
+  
+  puts "Found #{frameworks.count} frameworks to check"
+  
+  frameworks.each do |framework|
+    # Get the binary inside the framework
+    binary_name = File.basename(framework, ".framework")
+    binary = File.join(framework, binary_name)
+    
+    puts "Checking #{binary}"
+    
+    if File.exist?(binary)
+      # Use otool to check for Bitcode (__LLVM section)
+      contains_bitcode = `otool -l "#{binary}" | grep __LLVM`
+      if contains_bitcode && !contains_bitcode.empty?
+        puts "#{binary} contains Bitcode. Stripping..."
+
+        stripped = "#{binary}_stripped"
+
+        # Strip bitcode from the framework
+        system("xcrun bitcode_strip \"#{binary}\" -r -o \"#{stripped}\"")
+        
+        if File.exist?(stripped)
+          # Replace the original file with the stripped one
+          FileUtils.mv(stripped, binary, force: true)
+          puts "Successfully stripped bitcode from #{binary}"
+          
+          # Verify bitcode was removed
+          verify = `otool -l "#{binary}" | grep __LLVM`
+          if verify && !verify.empty?
+            puts "WARNING: Bitcode still present in #{binary}"
+          else
+            puts "Verified: Bitcode removed from #{binary}"
+          end
+        else
+          puts "Failed to strip bitcode from #{binary}"
+        end
+      else
+        puts "#{binary} does not contain bitcode. Skipping."
+      end
+    else
+      puts "Binary not found: #{binary}"
+    end
+  end
+
+  puts "Bitcode stripping completed."
+end
+
+# Call the function at the end of post_install
+strip_bitcode_from_frameworks
+end
